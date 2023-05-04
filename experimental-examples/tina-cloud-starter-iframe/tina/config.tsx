@@ -1,4 +1,4 @@
-import { defineStaticConfig } from "tinacms";
+import { Select, defineStaticConfig, wrapFieldsWithMeta } from "tinacms";
 import { contentBlockSchema } from "../components/blocks/content";
 import { featureBlockSchema } from "../components/blocks/features";
 import { heroBlockSchema } from "../components/blocks/hero";
@@ -175,6 +175,7 @@ const config = defineStaticConfig({
             type: "object",
             label: "Header",
             name: "header",
+            // @ts-ignore
             fields: [
               iconSchema,
               {
@@ -190,6 +191,37 @@ const config = defineStaticConfig({
                   { label: "Default", value: "default" },
                   { label: "Primary", value: "primary" },
                 ],
+                ui: {
+                  component: wrapFieldsWithMeta((props) => {
+                    return (
+                      /* @ts-ignore */
+                      <Select
+                        {...props}
+                        // show the color in front of the label
+                        componentOverrides={{
+                          prefix: ({ option, active }) => {
+                            let color = "bg-gray-900";
+                            if (option.value === "primary") {
+                              color = "bg-blue-500";
+                            }
+                            return (
+                              <div
+                                className={`rounded-full w-5 h-5 border mr-1 shrink-0 ${color} ${
+                                  active
+                                    ? "border-white/80"
+                                    : "border-gray-800/80"
+                                }`}
+                                style={{
+                                  backgroundColor: color,
+                                }}
+                              />
+                            );
+                          },
+                        }}
+                      />
+                    );
+                  }),
+                },
               },
               {
                 type: "object",
@@ -274,6 +306,17 @@ const config = defineStaticConfig({
                 label: "Primary Color",
                 name: "color",
                 ui: {
+                  /* HACK TO KEEP COLORS IN TAILWIND AFTER PURGE
+                    blue: "bg-blue-500 border-blue-600",
+                    teal: "bg-teal-500 border-teal-600",
+                    green: "bg-green-500 border-green-600",
+                    yellow: "bg-yellow-500 border-yellow-600",
+                    orange: "bg-orange-500 border-orange-600",
+                    red: "bg-red-500 border-red-600",
+                    pink: "bg-pink-500 border-pink-600",
+                    purple: "bg-purple-500 border-purple-600",
+                    white: "bg-white border-gray-150",
+                  */
                   component: ColorPickerInput,
                 },
               },
@@ -294,7 +337,70 @@ const config = defineStaticConfig({
                     label: "Lato",
                     value: "lato",
                   },
+                  {
+                    label: "Inter",
+                    value: "inter",
+                  },
                 ],
+                ui: {
+                  component: wrapFieldsWithMeta((props) => {
+                    // load fonts dynamically to show in select for use case demo purposes
+                    import("webfontloader").then((WebFont) => {
+                      return WebFont.load({
+                        google: {
+                          families: [
+                            "Nunito:400,500,700",
+                            "Lato:400,500,700",
+                            "Inter:400,500,700",
+                          ],
+                        },
+                      });
+                    });
+
+                    const getStyles = (option: {
+                      value: any;
+                      label?: string;
+                    }) => ({
+                      fontFamily:
+                        option.value === "sans"
+                          ? 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"'
+                          : option.value,
+                    });
+
+                    return (
+                      /* @ts-ignore */
+                      <Select
+                        {...props}
+                        // show the font name in the given font
+                        componentOverrides={{
+                          label: ({ option }) => {
+                            return (
+                              <span
+                                className="font-medium"
+                                style={getStyles(option)}
+                              >
+                                {option.label}
+                              </span>
+                            );
+                          },
+                          subLabel: ({ option }) => {
+                            return (
+                              <span
+                                style={{
+                                  fontFamily:
+                                    option.value === "sans" ? "" : option.value,
+                                }}
+                              >
+                                A brown fox jumps over the lazy dog
+                              </span>
+                            );
+                          },
+                        }}
+                        // show a sample phrase in the given font
+                      />
+                    );
+                  }),
+                },
               },
               {
                 type: "string",
