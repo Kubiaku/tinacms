@@ -62,6 +62,7 @@ export class TinaMediaStore implements MediaStore {
   private isLocal: boolean
   private url: string
   private staticMedia: StaticMedia
+  private lastAuth: number = 0
   isStatic?: boolean
 
   constructor(cms: CMS, staticMedia?: StaticMedia) {
@@ -100,7 +101,18 @@ export class TinaMediaStore implements MediaStore {
 
   async isAuthenticated() {
     this.setup()
-    return await this.api.authProvider.isAuthenticated()
+
+    // If we've authenticated in the last 5 minutes, return true
+    if (this.lastAuth && Date.now() - this.lastAuth < 1000 * 60 * 5) {
+      return true
+    }
+
+    // Otherwise, check if we're authenticated
+    const authenticated = await this.api.authProvider.isAuthenticated()
+    if (authenticated) {
+      this.lastAuth = Date.now()
+    }
+    return authenticated
   }
 
   accept = DEFAULT_MEDIA_UPLOAD_TYPES
@@ -351,26 +363,30 @@ export class TinaMediaStore implements MediaStore {
     const { cursor, files, directories } = await res.json()
 
     const items: Media[] = []
+    for (const dir of directories) {
+      const filename = dir.startsWith('/') ? dir.substr(1) : dir
+      items.push({
+        type: 'dir',
+        id: options.directory ? `${options.directory}/${filename}` : filename,
+        directory: options.directory || '',
+        filename,
+      })
+    }
+
     for (const file of files) {
+      const filename = file.filename.startsWith('/')
+        ? file.filename.startsWith('/')
+        : file.filename
       items.push({
         directory: options.directory || '',
         type: 'file',
-        id: file.filename,
-        filename: file.filename,
+        id: filename,
+        filename,
         src: file.src,
         thumbnails: options.thumbnailSizes.reduce((acc, { w, h }) => {
           acc[`${w}x${h}`] = this.genThumbnail(file.src, { w, h })
           return acc
         }, {}),
-      })
-    }
-
-    for (const dir of directories) {
-      items.push({
-        type: 'dir',
-        id: dir,
-        directory: options.directory || '',
-        filename: dir,
       })
     }
 
