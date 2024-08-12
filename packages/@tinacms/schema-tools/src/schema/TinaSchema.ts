@@ -108,17 +108,20 @@ export class TinaSchema {
       // filter out file extensions that don't match the collection format
       if (
         !normalizedPath.endsWith(`.gitkeep.${collection.format || 'md'}`) &&
+        !collection.isSingleFile &&
         fileExtension !== (collection.format || 'md')
       ) {
         return false
       }
-      if (collection?.match?.include || collection?.match?.exclude) {
-        // if the collection has a match or exclude, we need to check if the file matches
-        const matches = this.getMatches({ collection })
-        const match = picomatch.isMatch(normalizedPath, matches)
+      if (!collection.isSingleFile) {
+        if (collection?.match?.include || collection?.match?.exclude) {
+          // if the collection has a match or exclude, we need to check if the file matches
+          const matches = this.getMatches({ collection })
+          const match = picomatch.isMatch(normalizedPath, matches)
 
-        if (!match) {
-          return false
+          if (!match) {
+            return false
+          }
         }
       }
       // add / to the end of the path if it is not "''"

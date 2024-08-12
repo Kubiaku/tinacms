@@ -10,6 +10,7 @@ import {
   Collection,
   CollectionTemplateable,
   normalizePath,
+  TinaField,
   TinaSchema,
 } from '@tinacms/schema-tools'
 
@@ -28,11 +29,39 @@ const matterEngines = {
   },
 }
 
+export const stringifyCSV = (collection: Collection<true>, items: any[]) => {
+  const lines: string[] = []
+  const fields = collection.fields
+  const fieldLookup = fields.reduce((acc, field) => {
+    acc[field.name] = field
+    return acc
+  }, {} as { [key: string]: TinaField<true> })
+  const headers = fields.map((field) => field.name)
+  lines.push(headers.join(','))
+  items.forEach((item) => {
+    const row = headers.map((header) => {
+      const val = item[header]
+      if (typeof val === 'undefined') {
+        return '""'
+      }
+      const fieldType = fieldLookup[header].type
+      if (fieldType === 'number' || fieldType === 'boolean') {
+        return val
+      } else {
+        return `"${val.replace(/"/g, '\\"')}"`
+      }
+    })
+    lines.push(row.join(','))
+  })
+  return `${lines.join('\n')}\n`
+}
+
 export const stringifyFile = (
   content: object,
   format: FormatType | string, // FIXME
   /** For non-polymorphic documents we don't need the template key */
   keepTemplateKey: boolean,
+  collection?: Collection<true>,
   markdownParseConfig?: {
     frontmatterFormat?: 'toml' | 'yaml' | 'json'
     frontmatterDelimiters?: [string, string] | string
@@ -60,6 +89,12 @@ export const stringifyFile = (
   }
   const strippedContent = { ...rest, ...extra }
   switch (format) {
+    case '.csv':
+      if (!collection) {
+        throw new Error(`Must specify a collection when stringifying CSV files`)
+      }
+      // return stringifyCSV(collection, strippedContent)
+      throw new Error(`CSV stringifying is not supported yet`)
     case '.markdown':
     case '.mdx':
     case '.md':
@@ -85,10 +120,41 @@ export const stringifyFile = (
   }
 }
 
+export function parseCSV(content: string, collection: Collection<true>) {
+  const fields = collection.fields
+  const fieldLookup = fields.reduce((acc, field) => {
+    acc[field.name] = field
+    return acc
+  }, {} as { [key: string]: TinaField<true> })
+  const lines = content.split('\n')
+  const headers = lines[0].split(',')
+  const rows = lines
+    .slice(1)
+    .map((line) => line.split(','))
+    .filter((row) => row.length === headers.length)
+
+  return rows.map((row) => {
+    const obj: any = {}
+    headers.forEach((header, i) => {
+      const field = fields.find((field) => field.name === header)
+      if (field) {
+        const fieldType = fieldLookup[header].type
+        if (fieldType === 'number' || fieldType === 'boolean') {
+          obj[header] = row[i]
+        } else {
+          obj[header] = row[i].slice(1, -1).replace(/\\"/g, '"')
+        }
+      }
+    })
+    return obj
+  })
+}
+
 export const parseFile = <T extends object>(
   content: string,
   format: FormatType | string, // FIXME
   yupSchema: (args: typeof yup) => yup.ObjectSchema<any>,
+  collection?: Collection<true>,
   markdownParseConfig?: {
     frontmatterFormat?: 'toml' | 'yaml' | 'json'
     frontmatterDelimiters?: [string, string] | string
@@ -96,6 +162,14 @@ export const parseFile = <T extends object>(
 ): T => {
   try {
     switch (format) {
+      case '.csv':
+        if (!collection) {
+          throw new Error(`Must specify a collection when parsing CSV files`)
+        }
+
+        // TODO I don't think we want to allow this
+        // return parseCSV(content, collection) as T
+        throw new Error(`CSV parsing is not supported yet`)
       case '.markdown':
       case '.mdx':
       case '.md':
@@ -135,7 +209,7 @@ export const parseFile = <T extends object>(
   throw new Error(`Must specify a valid format, got ${format}`)
 }
 
-export type FormatType = 'json' | 'md' | 'mdx' | 'markdown'
+export type FormatType = 'json' | 'md' | 'mdx' | 'markdown' | 'csv'
 
 export const atob = (b64Encoded: string) => {
   return Buffer.from(b64Encoded, 'base64').toString()
@@ -321,23 +395,59 @@ export const getTemplateForFile = (
   throw new Error(`Unable to determine template`)
 }
 
+export const bridgeDataLoader =
+  ({ bridge, collection }: { bridge: Bridge; collection?: Collection<true> }) =>
+  async (fp: string) => {
+    const dataString = await bridge.get(normalizePath(fp))
+    return parseFile(
+      dataString,
+      path.extname(fp),
+      (yup) => yup.object({}),
+      collection,
+      {
+        frontmatterDelimiters: collection?.frontmatterDelimiters,
+        frontmatterFormat: collection?.frontmatterFormat,
+      }
+    )
+  }
+
+export const csvDataLoader = async ({
+  bridge,
+  collection,
+  pathField,
+  sourcePath,
+}: {
+  bridge: Bridge
+  collection?: Collection<true>
+  pathField: string
+  sourcePath: string
+}) => {
+  const stringCSV = await bridge.get(sourcePath)
+  const rows = parseCSV(stringCSV, collection)
+  const source = rows.reduce((acc, row) => {
+    const key = `${collection.path}/${row[pathField]}.${collection.format}`
+    if (!key) {
+      throw new Error(`Missing key ${pathField} in row ${row}`)
+    }
+    acc[key] = row
+    // delete acc[key][pathField]
+    return acc
+  }, {} as Record<string, Record<string, any>>)
+
+  return async (fp: string) => {
+    return source[fp]
+  }
+}
+
+export type DataLoader = (fp: string) => Promise<any>
+
 /** TODO help needed with name of this function **/
 export const loadAndParseWithAliases = async (
-  bridge: Bridge,
+  dataLoader: DataLoader,
   filepath: string,
-  collection?: Collection<true>,
   templateInfo?: CollectionTemplateable
 ) => {
-  const dataString = await bridge.get(normalizePath(filepath))
-  const data = parseFile(
-    dataString,
-    path.extname(filepath),
-    (yup) => yup.object({}),
-    {
-      frontmatterDelimiters: collection?.frontmatterDelimiters,
-      frontmatterFormat: collection?.frontmatterFormat,
-    }
-  )
+  const data = await dataLoader(filepath)
   const template = getTemplateForFile(templateInfo, data as any)
   if (!template) {
     console.warn(

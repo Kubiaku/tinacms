@@ -723,7 +723,7 @@ export class Resolver {
         /**
          * createDocument, create<Collection>Document
          */
-        if (alreadyExists === true) {
+        if (alreadyExists) {
           throw new Error(`Unable to add document, ${realPath} already exists`)
         }
         return this.createResolveDocument({
@@ -736,7 +736,7 @@ export class Resolver {
         /**
          * createFolder, create<Collection>Folder
          */
-        if (alreadyExists === true) {
+        if (alreadyExists) {
           throw new Error(`Unable to add folder, ${realPath} already exists`)
         }
         await this.database.put(
@@ -765,6 +765,11 @@ export class Resolver {
         return doc
       }
       if (isUpdateName) {
+        if (!alreadyExists) {
+          throw new Error(
+            `Unable to rename document, ${realPath} does not exist`
+          )
+        }
         // Must provide a new relative path in the params
         assertShape<{ params: string }>(args, (yup) =>
           yup.object({ params: yup.object().required() })
@@ -778,6 +783,19 @@ export class Resolver {
           collection?.path,
           args.params.relativePath
         )
+        if (collection.isSingleFile) {
+          const uidField = collection.fields.find((field) => !!field.uid)
+          if (!uidField) {
+            throw new GraphQLError(
+              `Collection ${collection.name} is configured as single file, but does not have a field with uid set.`
+            )
+          }
+          doc._rawData[uidField.name] = newRealPath
+            .substring(collection.path.length + 1)
+            .split('.')
+            .slice(0, -1)
+            .join('.')
+        }
         // Update the document
         await this.database.put(newRealPath, doc._rawData, collection.name)
         // Delete the old document

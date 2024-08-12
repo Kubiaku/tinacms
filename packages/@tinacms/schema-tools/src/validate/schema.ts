@@ -7,6 +7,7 @@ import { name } from './properties'
 import { findDuplicates } from '../util'
 import { TinaFieldZod } from './fields'
 import { tinaConfigZod } from './tinaCloudSchemaConfig'
+import { ObjectField } from '../types'
 const FORMATS = [
   'json',
   'md',
@@ -15,6 +16,7 @@ const FORMATS = [
   'toml',
   'yaml',
   'yml',
+  'csv',
 ] as const
 
 const Template = z
@@ -60,6 +62,7 @@ export const CollectionBaseSchema = z.object({
   format: z.enum(FORMATS).optional(),
   isAuthCollection: z.boolean().optional(),
   isDetached: z.boolean().optional(),
+  isSingleFile: z.boolean().optional(),
 })
 
 // Zod did not handel this union very well so we will handle it ourselves
@@ -176,5 +179,49 @@ export const TinaCloudSchemaZod = z
         fatal: true,
         path: ['config', 'search'],
       })
+    }
+  })
+  .superRefine((val, ctx) => {
+    for (const collection of val.collections) {
+      if (collection.isSingleFile && collection.format !== 'csv') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `isSingleFile can only be used with the 'csv' format`,
+          path: ['collections', collection.name],
+        })
+      }
+      if (collection.format === 'csv' && !collection.isSingleFile) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `CSV collections must be marked as isSingleFile`,
+          path: ['collections', collection.name],
+        })
+      }
+      if (collection.isSingleFile) {
+        const fields = collection.fields
+        const uidField = fields.find((field) => field.uid)
+        if (!uidField) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `isSingleFile collections must have a field marked as 'uid'`,
+            path: ['collections', collection.name],
+          })
+        }
+        for (const field of fields) {
+          if (field.type === 'object') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `isSingleFile collections cannot have nested objects`,
+              path: ['collections', collection.name, 'fields', field.name],
+            })
+          } else if (field.list) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `isSingleFile collections cannot have nested lists`,
+              path: ['collections', collection.name, 'fields', field.name],
+            })
+          }
+        }
+      }
     }
   })
