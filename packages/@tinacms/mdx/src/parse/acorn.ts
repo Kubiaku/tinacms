@@ -16,7 +16,8 @@ type TinaStringField =
 export const extractAttributes = (
   attributes: (MdxJsxAttribute | MdxJsxExpressionAttribute)[],
   fields: TinaField[],
-  imageCallback: (image: string) => string
+  imageCallback: (image: string) => string,
+  context: Record<string, unknown> | undefined
 ) => {
   const properties: Record<string, unknown> = {}
   attributes?.forEach((attribute) => {
@@ -31,7 +32,8 @@ export const extractAttributes = (
       properties[attribute.name] = extractAttribute(
         attribute,
         field,
-        imageCallback
+        imageCallback,
+        context
       )
     } catch (e) {
       if (e instanceof Error) {
@@ -47,7 +49,8 @@ export const extractAttributes = (
 const extractAttribute = (
   attribute: MdxJsxAttribute,
   field: TinaField,
-  imageCallback: (image: string) => string
+  imageCallback: (image: string) => string,
+  context: Record<string, unknown> | undefined
 ) => {
   switch (field.type) {
     case 'boolean':
@@ -80,6 +83,23 @@ const extractAttribute = (
     case 'object':
       return extractObject(extractExpression(attribute), field, imageCallback)
     case 'rich-text':
+      if (attribute.type === 'mdxJsxAttribute') {
+        if (typeof attribute.value === 'string') {
+          if (attribute.value.startsWith('_tinaEmbeds')) {
+            const embedValue = context?._tinaEmbeds as Record<string, unknown>
+            const key = attribute.value.split('.')[1]
+            if (typeof key !== 'string') {
+              throw new Error(`Unable to extract key from embed value`)
+            }
+            const value = embedValue[key]
+            if (typeof value === 'string') {
+              const ast = parseMDX(value, field, imageCallback, context)
+              ast.embedCode = attribute.value.split('.')[1]
+              return ast
+            }
+          }
+        }
+      }
       const JSXString = extractRaw(attribute)
       if (JSXString) {
         return parseMDX(JSXString, field, imageCallback)

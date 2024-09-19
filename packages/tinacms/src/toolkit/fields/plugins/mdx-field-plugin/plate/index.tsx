@@ -88,6 +88,7 @@ export const RichEditor = (props: RichTextType) => {
           props.input.onChange({
             type: 'root',
             children: value,
+            embedCode: props.input.value.embedCode,
           })
         }}
       >

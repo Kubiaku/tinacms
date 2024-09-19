@@ -41,14 +41,24 @@ export const createResolver = (args: ResolverConfig) => {
   return new Resolver(args)
 }
 
-const resolveFieldData = async (
-  { namespace, ...field }: TinaField<true>,
-  rawData: unknown,
-  accumulator: { [key: string]: unknown },
-  tinaSchema: TinaSchema,
-  config?: GraphQLConfig,
+const resolveFieldData = async (args: {
+  field: TinaField<true>
+  rawData: unknown
+  accumulator: { [key: string]: unknown }
+  tinaSchema: TinaSchema
+  config?: GraphQLConfig
   isAudit?: boolean
-) => {
+  context: Record<string, unknown>
+}) => {
+  const {
+    field: { namespace, ...field },
+    rawData,
+    accumulator,
+    tinaSchema,
+    config,
+    isAudit,
+    context,
+  } = args
   if (!rawData) {
     return undefined
   }
@@ -87,9 +97,13 @@ const resolveFieldData = async (
       )
       break
     case 'rich-text':
-      // @ts-ignore value is unknown
-      const tree = parseMDX(value, field, (value) =>
-        resolveMediaRelativeToCloud(value, config, tinaSchema.schema)
+      const tree = parseMDX(
+        // @ts-ignore value is unknown
+        value,
+        field,
+        (value) =>
+          resolveMediaRelativeToCloud(value, config, tinaSchema.schema),
+        context
       )
       if (tree?.children[0]?.type === 'invalid_markdown') {
         if (isAudit) {
@@ -124,14 +138,15 @@ const resolveFieldData = async (
           })
           const payload = {}
           await sequential(template.fields, async (field) => {
-            await resolveFieldData(
+            await resolveFieldData({
               field,
-              item,
-              payload,
+              rawData: item,
+              accumulator: payload,
               tinaSchema,
               config,
-              isAudit
-            )
+              isAudit,
+              context,
+            })
           })
           const isUnion = !!field.templates
           return isUnion
@@ -155,14 +170,15 @@ const resolveFieldData = async (
         })
         const payload = {}
         await sequential(template.fields, async (field) => {
-          await resolveFieldData(
+          await resolveFieldData({
             field,
-            value,
-            payload,
+            rawData: value,
+            accumulator: payload,
             tinaSchema,
             config,
-            isAudit
-          )
+            isAudit,
+            context,
+          })
         })
         const isUnion = !!field.templates
         accumulator[field.name] = isUnion
@@ -180,13 +196,15 @@ const resolveFieldData = async (
   return accumulator
 }
 
-export const transformDocumentIntoPayload = async (
-  fullPath: string,
-  rawData: { _collection; _template },
-  tinaSchema: TinaSchema,
-  config?: GraphQLConfig,
+export const transformDocumentIntoPayload = async (args: {
+  fullPath: string
+  rawData: { _collection; _template }
+  tinaSchema: TinaSchema
+  config?: GraphQLConfig
   isAudit?: boolean
-) => {
+  context: Record<string, unknown>
+}) => {
+  const { fullPath, rawData, tinaSchema, config, isAudit, context } = args
   const collection = tinaSchema.getCollection(rawData._collection)
   try {
     const template = tinaSchema.getTemplateForData({
@@ -213,14 +231,15 @@ export const transformDocumentIntoPayload = async (
     }
     try {
       await sequential(template.fields, async (field) => {
-        return resolveFieldData(
+        return resolveFieldData({
           field,
           rawData,
-          data,
+          accumulator: data,
           tinaSchema,
           config,
-          isAudit
-        )
+          isAudit,
+          context,
+        })
       })
     } catch (e) {
       throw new TinaParseDocumentError({
@@ -272,6 +291,7 @@ export const transformDocumentIntoPayload = async (
     throw e
   }
 }
+
 /**
  * The resolver provides functions for all possible types of lookup
  * values and retrieves them from the database
@@ -281,6 +301,7 @@ export class Resolver {
   public database: Database
   public tinaSchema: TinaSchema
   public isAudit: boolean
+  public context: Record<string, unknown> = {}
   constructor(public init: ResolverConfig) {
     this.config = init.config
     this.database = init.database
@@ -333,13 +354,15 @@ export class Resolver {
         path: rawData['__folderPath'],
       }
     } else {
-      return transformDocumentIntoPayload(
+      this.context = { ...rawData }
+      return transformDocumentIntoPayload({
         fullPath,
         rawData,
-        this.tinaSchema,
-        this.config,
-        this.isAudit
-      )
+        tinaSchema: this.tinaSchema,
+        config: this.config,
+        isAudit: this.isAudit,
+        context: this.context,
+      })
     }
   }
   public getDocument = async (fullPath: unknown) => {
@@ -348,13 +371,15 @@ export class Resolver {
     }
 
     const rawData = await this.getRaw(fullPath)
-    return transformDocumentIntoPayload(
+    this.context = { ...rawData }
+    return transformDocumentIntoPayload({
       fullPath,
       rawData,
-      this.tinaSchema,
-      this.config,
-      this.isAudit
-    )
+      tinaSchema: this.tinaSchema,
+      config: this.config,
+      isAudit: this.isAudit,
+      context: this.context,
+    })
   }
 
   public deleteDocument = async (fullPath: unknown) => {
@@ -555,6 +580,9 @@ export class Resolver {
     const doc = await this.getDocument(realPath)
 
     const oldDoc = this.resolveLegacyValues(doc?._rawData || {}, collection)
+    let values: {
+      [key: string]: unknown
+    }
     /**
      * TODO: Remove when `addPendingDocument` is no longer needed.
      */
@@ -566,19 +594,15 @@ export class Resolver {
       switch (templateInfo.type) {
         case 'object':
           if (params) {
-            const values = await this.buildFieldMutations(
+            const mutationValues = await this.buildFieldMutations(
               params,
               templateInfo.template,
               doc?._rawData
             )
-            await this.database.put(
-              realPath,
-              { ...oldDoc, ...values },
-              collection.name
-            )
+            values = { ...oldDoc, ...mutationValues }
           }
           break
-        case 'union':
+        case 'union': {
           // FIXME: ensure only one field is passed here
           await sequential(templateInfo.templates, async (template) => {
             const templateParams = params[lastItem(template.namespace)]
@@ -588,7 +612,7 @@ export class Resolver {
                   `Expected to find an object for template params, but got string`
                 )
               }
-              const values = {
+              values = {
                 ...oldDoc,
                 ...(await this.buildFieldMutations(
                   // @ts-ignore FIXME: failing on unknown, which we don't need to know because it's recursive
@@ -598,21 +622,28 @@ export class Resolver {
                 )),
                 _template: lastItem(template.namespace),
               }
-              await this.database.put(realPath, values, collection.name)
             }
           })
+        }
       }
-      return this.getDocument(realPath)
+    } else {
+      const params = await this.buildObjectMutations(
+        //@ts-expect-error FIXME: Argument of type 'unknown' is not assignable to parameter of type 'FieldParams'
+        isCollectionSpecific ? args.params : args.params[collection.name],
+        collection,
+        doc?._rawData
+      )
+      values = { ...oldDoc, ...params }
     }
 
-    const params = await this.buildObjectMutations(
-      //@ts-ignore
-      isCollectionSpecific ? args.params : args.params[collection.name],
-      collection,
-      doc?._rawData
+    const _tinaEmbeds = this.context?._tinaEmbeds
+      ? { _tinaEmbeds: this.context._tinaEmbeds }
+      : {}
+    await this.database.put(
+      realPath,
+      { ...values, ..._tinaEmbeds },
+      collection.name
     )
-    //@ts-ignore
-    await this.database.put(realPath, { ...oldDoc, ...params }, collection.name)
     return this.getDocument(realPath)
   }
 
@@ -1048,13 +1079,17 @@ export class Resolver {
           }
           break
         case 'rich-text':
-          // @ts-ignore
-          accum[fieldName] = stringifyMDX(fieldValue, field, (fieldValue) =>
-            resolveMediaCloudToRelative(
-              fieldValue as string,
-              this.config,
-              this.tinaSchema.schema
-            )
+          accum[fieldName] = stringifyMDX(
+            // @ts-ignore
+            fieldValue,
+            field,
+            (fieldValue) =>
+              resolveMediaCloudToRelative(
+                fieldValue as string,
+                this.config,
+                this.tinaSchema.schema
+              ),
+            this.context
           )
           break
         case 'reference':
